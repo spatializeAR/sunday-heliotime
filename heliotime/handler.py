@@ -11,9 +11,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 from zoneinfo import ZoneInfo
 
-from .sun import sun_events_for_date, sun_events_for_range, validate_location
-from .geo import resolve_location, get_timezone_info, GeocodingError, TimezoneError
-from .crosscheck import cross_check_day, cross_check_range, CrossCheckError
+from sun import sun_events_for_date, sun_events_for_range, validate_location
+from geo import resolve_location, get_timezone_info, GeocodingError, TimezoneError
+from crosscheck import cross_check_day, cross_check_range, CrossCheckError
 
 # Configure logging
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
@@ -277,6 +277,124 @@ def handle_healthz_endpoint(event: Dict) -> Dict:
     })
 
 
+def handle_help_endpoint(event: Dict) -> Dict:
+    """Handle GET /help endpoint - returns API documentation."""
+    # Construct base URL from the request
+    headers = event.get('headers', {})
+    host = headers.get('Host', 'api.sunday.wiki')
+    stage = event.get('requestContext', {}).get('stage', '')
+    
+    # Build proper base URL
+    if stage and stage != 'prod':
+        base_url = f"https://{host}/{stage}"
+    else:
+        base_url = f"https://{host}"
+    
+    return create_response(200, {
+        'service': 'HelioTime API',
+        'description': 'High-precision sunrise, sunset, and twilight time calculations using NREL SPA algorithm',
+        'version': '1.0.0',
+        'endpoints': {
+            '/sun': {
+                'method': 'GET',
+                'description': 'Calculate sun events (sunrise, sunset, twilight times)',
+                'parameters': {
+                    'location': {
+                        'lat': 'Latitude in decimal degrees (-90 to 90)',
+                        'lon': 'Longitude in decimal degrees (-180 to 180)',
+                        'gps': 'Alternative: GPS string "lat,lon"',
+                        'postal_code': 'Alternative: Postal/ZIP code (requires country_code)',
+                        'city': 'Alternative: City name (optionally with country)',
+                        'country_code': 'ISO 3166-1 alpha-2 country code for postal_code',
+                        'country': 'Country name for city lookup'
+                    },
+                    'date': {
+                        'date': 'Single date (YYYY-MM-DD)',
+                        'start_date': 'Range start date (YYYY-MM-DD)',
+                        'end_date': 'Range end date (YYYY-MM-DD, max 366 days)'
+                    },
+                    'optional': {
+                        'elevation_m': 'Elevation in meters (default: 0)',
+                        'pressure_hpa': 'Atmospheric pressure in hPa (default: 1013.25)',
+                        'temperature_c': 'Temperature in Celsius (default: 15)',
+                        'tz': 'Timezone name (e.g., "America/New_York")',
+                        'altitude_correction': 'Apply altitude correction (true/false)',
+                        'include_twilight': 'Include twilight times (true/false, default: true)'
+                    }
+                }
+            },
+            '/healthz': {
+                'method': 'GET',
+                'description': 'Health check endpoint',
+                'parameters': {}
+            },
+            '/help': {
+                'method': 'GET',
+                'description': 'This help documentation',
+                'parameters': {}
+            }
+        },
+        'examples': [
+            {
+                'description': 'Today\'s sun times for London',
+                'url': f"{base_url}/sun?lat=51.5074&lon=-0.1278"
+            },
+            {
+                'description': 'Specific date in New York',
+                'url': f"{base_url}/sun?lat=40.7128&lon=-74.0060&date=2025-12-25"
+            },
+            {
+                'description': 'Week of sun times in Tokyo',
+                'url': f"{base_url}/sun?lat=35.6762&lon=139.6503&start_date=2025-09-01&end_date=2025-09-07"
+            },
+            {
+                'description': 'Using GPS coordinates (San Francisco)',
+                'url': f"{base_url}/sun?gps=37.7749,-122.4194"
+            },
+            {
+                'description': 'Using city name',
+                'url': f"{base_url}/sun?city=Paris&country=France"
+            },
+            {
+                'description': 'Using postal code',
+                'url': f"{base_url}/sun?postal_code=10001&country_code=US"
+            },
+            {
+                'description': 'With elevation and timezone',
+                'url': f"{base_url}/sun?lat=46.8182&lon=8.2275&elevation_m=2000&tz=Europe/Zurich"
+            }
+        ],
+        'response_format': {
+            'request': 'Echo of request parameters',
+            'days': 'Array of daily sun event data',
+            'meta': 'Metadata including computation time'
+        },
+        'daily_data': {
+            'date': 'Date (YYYY-MM-DD)',
+            'sunrise': 'Sunrise time (ISO 8601)',
+            'sunset': 'Sunset time (ISO 8601)',
+            'solar_noon': 'Solar noon time',
+            'day_length_sec': 'Day length in seconds',
+            'civil_dawn': 'Civil twilight begin',
+            'civil_dusk': 'Civil twilight end',
+            'nautical_dawn': 'Nautical twilight begin',
+            'nautical_dusk': 'Nautical twilight end',
+            'astronomical_dawn': 'Astronomical twilight begin',
+            'astronomical_dusk': 'Astronomical twilight end',
+            'flags': {
+                'polar_day': 'Sun never sets',
+                'polar_night': 'Sun never rises',
+                'no_civil_twilight': 'No civil twilight',
+                'no_nautical_twilight': 'No nautical twilight',
+                'no_astronomical_twilight': 'No astronomical twilight'
+            }
+        },
+        'algorithm': 'NREL Solar Position Algorithm (Reda & Andreas, 2005)',
+        'accuracy': '±0.0003 degrees for solar position',
+        'documentation': 'https://github.com/spatializeAR/heliotime'
+    })
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     Main Lambda handler function.
@@ -291,13 +409,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     
     # Route to endpoint handlers
     path = event.get('path', '/')
+    params = event.get('queryStringParameters') or {}
+    
+    # Check if help is requested via query parameter
+    if params.get('help') in ['true', '1', 'yes'] or 'help' in params:
+        return handle_help_endpoint(event)
     
     if path == '/sun' and event.get('httpMethod') == 'GET':
         return handle_sun_endpoint(event)
     elif path == '/healthz' and event.get('httpMethod') == 'GET':
         return handle_healthz_endpoint(event)
+    elif path == '/help' and event.get('httpMethod') == 'GET':
+        return handle_help_endpoint(event)
+    elif path == '/' and event.get('httpMethod') == 'GET':
+        # Root path also returns help
+        return handle_help_endpoint(event)
     else:
         return create_response(404, {
             'error': 'Not found',
-            'message': f"Unknown endpoint: {event.get('httpMethod')} {path}"
+            'message': f"Unknown endpoint: {event.get('httpMethod')} {path}",
+            'hint': 'Try /help for API documentation'
         })

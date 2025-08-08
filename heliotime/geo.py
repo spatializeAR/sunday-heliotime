@@ -14,12 +14,16 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from timezonefinder import TimezoneFinder
 
 logger = logging.getLogger(__name__)
 
-# Initialize timezone finder
-tf = TimezoneFinder()
+# Initialize timezone finder - handle missing dependency gracefully
+try:
+    from timezonefinder import TimezoneFinder
+    tf = TimezoneFinder()
+except ImportError:
+    logger.warning("timezonefinder not available - timezone resolution disabled")
+    tf = None
 
 # Environment configuration
 GEOCODER = os.environ.get('GEOCODER', 'nominatim')
@@ -195,6 +199,11 @@ def resolve_timezone(lat: float, lon: float) -> str:
     Resolve IANA timezone ID from coordinates.
     Returns timezone ID string (e.g., 'Europe/London').
     """
+    if tf is None:
+        # Fallback to UTC if timezonefinder not available
+        logger.warning("TimezoneFinder not available, defaulting to UTC")
+        return "UTC"
+    
     # Try primary method
     tz_name = tf.timezone_at(lat=lat, lng=lon)
     

@@ -145,7 +145,13 @@ def compare_times(calculated: Optional[datetime], external: Optional[datetime],
             'message': f"Calculated: {calculated}, External: no {event_name}"
         }
     
-    # Both have values - calculate delta
+    # Both have values - ensure both are timezone aware for comparison
+    if calculated.tzinfo is None:
+        calculated = calculated.replace(tzinfo=timezone.utc)
+    if external.tzinfo is None:
+        external = external.replace(tzinfo=timezone.utc)
+    
+    # Calculate delta
     delta = (calculated - external).total_seconds()
     
     return {

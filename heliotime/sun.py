@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Any
 from zoneinfo import ZoneInfo
 import logging
 
-from .spa import (
+from spa import (
     find_sun_event_time, solar_position, julian_day, 
     julian_century, sun_declination, equation_of_time
 )

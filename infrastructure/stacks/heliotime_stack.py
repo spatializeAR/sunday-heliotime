@@ -145,10 +145,12 @@ class HelioTimeStack(Stack):
             self, "HelioTimeApi",
             rest_api_name=f"heliotime-api-{self.env_name}",
             description=f"HelioTime API - {self.env_name}",
+            cloud_watch_role=False,  # Disable automatic CloudWatch role creation
             deploy_options=apigateway.StageOptions(
                 stage_name=self.env_name,
-                logging_level=apigateway.MethodLoggingLevel.INFO,
-                data_trace_enabled=(self.env_name == "dev"),
+                # Disable CloudWatch logging for now to avoid role issues
+                # logging_level=apigateway.MethodLoggingLevel.INFO,
+                # data_trace_enabled=(self.env_name == "dev"),
                 metrics_enabled=True,
                 tracing_enabled=True,
                 throttling_burst_limit=100,
@@ -196,34 +198,71 @@ class HelioTimeStack(Stack):
         health_resource = api.root.add_resource("healthz")
         health_resource.add_method("GET", lambda_integration)
         
-        # Route53 configuration (optional - only if hosted zone exists)
-        # Note: In production, you'd want to use a custom domain with certificate
-        # Commenting out for now as hosted zone may not exist
-        # 
-        # To enable Route53 integration:
-        # 1. Ensure hosted zone exists for sunday.wiki
-        # 2. Uncomment the following code
-        # 3. Consider using custom domain with ACM certificate
-        #
-        # try:
-        #     hosted_zone = route53.HostedZone.from_lookup(
-        #         self, "HostedZone",
-        #         domain_name="sunday.wiki"
-        #     )
-        #     
-        #     # Extract subdomain from full domain name
-        #     subdomain = domain_name.replace(".sunday.wiki", "")
-        #     
-        #     route53.CnameRecord(
-        #         self, "ApiCnameRecord",
-        #         zone=hosted_zone,
-        #         record_name=subdomain,
-        #         domain_name=api.url.replace("https://", "").rstrip("/"),
-        #         ttl=Duration.minutes(5)
-        #     )
-        # except Exception:
-        #     # Skip Route53 if hosted zone not found
-        #     pass
+        help_resource = api.root.add_resource("help")
+        help_resource.add_method("GET", lambda_integration)
+        
+        # Root path also supports help
+        api.root.add_method("GET", lambda_integration)
+        
+        # Custom domain configuration
+        # For dev environment, use dev.sunday.wiki subdomain
+        if self.env_name == "dev":
+            # Look up the dev.sunday.wiki hosted zone
+            hosted_zone = route53.HostedZone.from_lookup(
+                self, "HostedZone",
+                domain_name="dev.sunday.wiki"
+            )
+            
+            # Full domain name for the API
+            api_domain_name = f"heliotime.dev.sunday.wiki"
+            
+            # Request ACM certificate for the domain
+            certificate = acm.Certificate(
+                self, "ApiCertificate",
+                domain_name=api_domain_name,
+                validation=acm.CertificateValidation.from_dns(hosted_zone),
+                subject_alternative_names=[],
+            )
+            
+            # Create custom domain for API Gateway
+            custom_domain = apigateway.DomainName(
+                self, "CustomDomain",
+                domain_name=api_domain_name,
+                certificate=certificate,
+                endpoint_type=apigateway.EndpointType.REGIONAL,
+                security_policy=apigateway.SecurityPolicy.TLS_1_2,
+            )
+            
+            # Map the API to the custom domain
+            apigateway.BasePathMapping(
+                self, "BasePathMapping",
+                domain_name=custom_domain,
+                rest_api=api,
+                stage=api.deployment_stage,
+            )
+            
+            # Create Route53 A record for the custom domain
+            route53.ARecord(
+                self, "ApiARecord",
+                zone=hosted_zone,
+                record_name="heliotime",
+                target=route53.RecordTarget.from_alias(
+                    route53_targets.ApiGatewayDomain(custom_domain)
+                ),
+                ttl=None,  # Not needed for alias records
+            )
+            
+            # Output the custom domain URL
+            CfnOutput(
+                self, "CustomDomainUrl",
+                value=f"https://{api_domain_name}",
+                description=f"Custom domain URL - {self.env_name}",
+                export_name=f"heliotime-custom-domain-url-{self.env_name}",
+            )
+        
+        # For production, you'd configure a different domain
+        # elif self.env_name == "prod":
+        #     # Similar configuration for production domain
         
         # CloudWatch Alarms
         cloudwatch.Alarm(
@@ -319,8 +358,8 @@ class HelioTimeStack(Stack):
         )
         
         CfnOutput(
-            self, "CustomDomain",
+            self, "ExpectedDomain",
             value=f"https://{domain_name}",
-            description=f"Custom domain URL - {self.env_name}",
-            export_name=f"heliotime-domain-{self.env_name}",
+            description=f"Expected domain URL - {self.env_name}",
+            export_name=f"heliotime-expected-domain-{self.env_name}",
         )

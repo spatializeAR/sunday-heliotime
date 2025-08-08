@@ -1,1 +1,6 @@
-{}
+{
+  "hosted-zone:account=419716723832:domainName=dev.sunday.wiki:region=us-east-1": {
+    "Id": "/hostedzone/Z0540512POPOJ8PT3RL4",
+    "Name": "dev.sunday.wiki."
+  }
+}
