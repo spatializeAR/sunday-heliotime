@@ -39,14 +39,14 @@ class HelioTimeStack(Stack):
     ) -> None:
         super().__init__(scope, id, **kwargs)
         
-        self.environment = environment
+        self.env_name = environment  # Renamed to avoid conflict with CDK's environment property
         self.domain_name = domain_name
         self.shared_resources_stack = shared_resources_stack
         
         # DynamoDB table for geocoding cache
         geo_cache_table = dynamodb.Table(
             self, "GeoCacheTable",
-            table_name=f"heliotime-geocache-{environment}",
+            table_name=f"heliotime-geocache-{self.env_name}",
             partition_key=dynamodb.Attribute(
                 name="query_hash",
                 type=dynamodb.AttributeType.STRING
@@ -54,7 +54,7 @@ class HelioTimeStack(Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             time_to_live_attribute="expires_at",
             point_in_time_recovery=True,
-            removal_policy=RemovalPolicy.RETAIN if environment == "prod" else RemovalPolicy.DESTROY,
+            removal_policy=RemovalPolicy.RETAIN if self.env_name == "prod" else RemovalPolicy.DESTROY,
             encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
             encryption_key=shared_resources_stack.encryption_key,
         )
@@ -75,7 +75,7 @@ class HelioTimeStack(Stack):
         # Lambda execution role
         lambda_role = iam.Role(
             self, "LambdaExecutionRole",
-            role_name=f"heliotime-lambda-role-{environment}",
+            role_name=f"heliotime-lambda-role-{self.env_name}",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
@@ -112,7 +112,7 @@ class HelioTimeStack(Stack):
         
         heliotime_lambda = lambda_.Function(
             self, "HelioTimeFunction",
-            function_name=f"heliotime-{environment}",
+            function_name=f"heliotime-{self.env_name}",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(str(lambda_code_path)),
@@ -122,11 +122,11 @@ class HelioTimeStack(Stack):
             tracing=lambda_.Tracing.ACTIVE,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
-                "ENV": environment,
+                "ENV": self.env_name,
                 "DYNAMODB_TABLE": geo_cache_table.table_name,
                 "KMS_KEY_ID": shared_resources_stack.encryption_key.key_id,
                 "GEOCODER_SECRET_ARN": shared_resources_stack.geocoder_api_key_secret.secret_arn,
-                "DEV_CROSSCHECK": "true" if environment == "dev" else "false",
+                "DEV_CROSSCHECK": "true" if self.env_name == "dev" else "false",
                 "DEV_CROSSCHECK_PROVIDER": "open-meteo",
                 "DEV_CROSSCHECK_TOLERANCE_SECONDS": "120",
                 "DEV_CROSSCHECK_ENFORCE": "false",
@@ -134,7 +134,7 @@ class HelioTimeStack(Stack):
                 "GEOCODER_BASE_URL": "https://nominatim.openstreetmap.org",
                 "CACHE_TTL_SECONDS": "7776000",
                 "MAX_RANGE_DAYS": "366",
-                "LOG_LEVEL": "DEBUG" if environment == "dev" else "INFO",
+                "LOG_LEVEL": "DEBUG" if self.env_name == "dev" else "INFO",
                 "BUILD_SHA": os.environ.get("GITHUB_SHA", "local"),
                 "BUILD_DATE": datetime.utcnow().isoformat(),
             }
@@ -143,12 +143,12 @@ class HelioTimeStack(Stack):
         # API Gateway
         api = apigateway.RestApi(
             self, "HelioTimeApi",
-            rest_api_name=f"heliotime-api-{environment}",
-            description=f"HelioTime API - {environment}",
+            rest_api_name=f"heliotime-api-{self.env_name}",
+            description=f"HelioTime API - {self.env_name}",
             deploy_options=apigateway.StageOptions(
-                stage_name=environment,
+                stage_name=self.env_name,
                 logging_level=apigateway.MethodLoggingLevel.INFO,
-                data_trace_enabled=(environment == "dev"),
+                data_trace_enabled=(self.env_name == "dev"),
                 metrics_enabled=True,
                 tracing_enabled=True,
                 throttling_burst_limit=100,
@@ -196,27 +196,34 @@ class HelioTimeStack(Stack):
         health_resource = api.root.add_resource("healthz")
         health_resource.add_method("GET", lambda_integration)
         
-        # Route53 configuration (simplified - CNAME to API Gateway)
+        # Route53 configuration (optional - only if hosted zone exists)
         # Note: In production, you'd want to use a custom domain with certificate
-        try:
-            hosted_zone = route53.HostedZone.from_lookup(
-                self, "HostedZone",
-                domain_name="sunday.wiki"
-            )
-            
-            # Extract subdomain from full domain name
-            subdomain = domain_name.replace(".sunday.wiki", "")
-            
-            route53.CnameRecord(
-                self, "ApiCnameRecord",
-                zone=hosted_zone,
-                record_name=subdomain,
-                domain_name=api.url.replace("https://", "").rstrip("/"),
-                ttl=Duration.minutes(5)
-            )
-        except Exception:
-            # Skip Route53 if hosted zone not found (for local testing)
-            pass
+        # Commenting out for now as hosted zone may not exist
+        # 
+        # To enable Route53 integration:
+        # 1. Ensure hosted zone exists for sunday.wiki
+        # 2. Uncomment the following code
+        # 3. Consider using custom domain with ACM certificate
+        #
+        # try:
+        #     hosted_zone = route53.HostedZone.from_lookup(
+        #         self, "HostedZone",
+        #         domain_name="sunday.wiki"
+        #     )
+        #     
+        #     # Extract subdomain from full domain name
+        #     subdomain = domain_name.replace(".sunday.wiki", "")
+        #     
+        #     route53.CnameRecord(
+        #         self, "ApiCnameRecord",
+        #         zone=hosted_zone,
+        #         record_name=subdomain,
+        #         domain_name=api.url.replace("https://", "").rstrip("/"),
+        #         ttl=Duration.minutes(5)
+        #     )
+        # except Exception:
+        #     # Skip Route53 if hosted zone not found
+        #     pass
         
         # CloudWatch Alarms
         cloudwatch.Alarm(
@@ -225,7 +232,7 @@ class HelioTimeStack(Stack):
             threshold=10,
             evaluation_periods=2,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description=f"High error rate for HelioTime Lambda - {environment}",
+            alarm_description=f"High error rate for HelioTime Lambda - {self.env_name}",
         )
         
         cloudwatch.Alarm(
@@ -234,7 +241,7 @@ class HelioTimeStack(Stack):
             threshold=3000,
             evaluation_periods=2,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description=f"High latency for HelioTime Lambda - {environment}",
+            alarm_description=f"High latency for HelioTime Lambda - {self.env_name}",
         )
         
         cloudwatch.Alarm(
@@ -243,77 +250,77 @@ class HelioTimeStack(Stack):
             threshold=5,
             evaluation_periods=1,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description=f"Throttling detected for HelioTime Lambda - {environment}",
+            alarm_description=f"Throttling detected for HelioTime Lambda - {self.env_name}",
         )
         
         # Store deployment information in SSM
         ssm.StringParameter(
             self, "LambdaArnParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/lambda-arn",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/lambda-arn",
             string_value=heliotime_lambda.function_arn,
-            description=f"HelioTime Lambda ARN - {environment}",
+            description=f"HelioTime Lambda ARN - {self.env_name}",
         )
         
         ssm.StringParameter(
             self, "ApiEndpointParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/api-endpoint",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/api-endpoint",
             string_value=api.url,
-            description=f"HelioTime API endpoint - {environment}",
+            description=f"HelioTime API endpoint - {self.env_name}",
         )
         
         ssm.StringParameter(
             self, "ApiIdParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/api-id",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/api-id",
             string_value=api.rest_api_id,
-            description=f"HelioTime API Gateway ID - {environment}",
+            description=f"HelioTime API Gateway ID - {self.env_name}",
         )
         
         ssm.StringParameter(
             self, "DynamoTableParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/dynamodb-table",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/dynamodb-table",
             string_value=geo_cache_table.table_name,
-            description=f"HelioTime DynamoDB table name - {environment}",
+            description=f"HelioTime DynamoDB table name - {self.env_name}",
         )
         
         ssm.StringParameter(
             self, "DomainNameParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/domain",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/domain",
             string_value=domain_name,
-            description=f"HelioTime domain name - {environment}",
+            description=f"HelioTime domain name - {self.env_name}",
         )
         
         ssm.StringParameter(
             self, "DeploymentTimestampParam",
-            parameter_name=f"/sunday/services/heliotime/{environment}/last-deployment",
+            parameter_name=f"/sunday/services/heliotime/{self.env_name}/last-deployment",
             string_value=datetime.utcnow().isoformat(),
-            description=f"Last deployment timestamp - {environment}",
+            description=f"Last deployment timestamp - {self.env_name}",
         )
         
         # Outputs
         CfnOutput(
             self, "ApiEndpoint",
             value=api.url,
-            description=f"API endpoint URL - {environment}",
-            export_name=f"heliotime-api-endpoint-{environment}",
+            description=f"API endpoint URL - {self.env_name}",
+            export_name=f"heliotime-api-endpoint-{self.env_name}",
         )
         
         CfnOutput(
             self, "LambdaArn",
             value=heliotime_lambda.function_arn,
-            description=f"Lambda function ARN - {environment}",
-            export_name=f"heliotime-lambda-arn-{environment}",
+            description=f"Lambda function ARN - {self.env_name}",
+            export_name=f"heliotime-lambda-arn-{self.env_name}",
         )
         
         CfnOutput(
             self, "DynamoTableName",
             value=geo_cache_table.table_name,
-            description=f"DynamoDB table name - {environment}",
-            export_name=f"heliotime-dynamodb-table-{environment}",
+            description=f"DynamoDB table name - {self.env_name}",
+            export_name=f"heliotime-dynamodb-table-{self.env_name}",
         )
         
         CfnOutput(
             self, "CustomDomain",
             value=f"https://{domain_name}",
-            description=f"Custom domain URL - {environment}",
-            export_name=f"heliotime-domain-{environment}",
+            description=f"Custom domain URL - {self.env_name}",
+            export_name=f"heliotime-domain-{self.env_name}",
         )
