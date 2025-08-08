@@ -1,0 +1,258 @@
+name: Deploy HelioTime
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  AWS_REGION: us-east-1
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      
+      - name: Run linting
+        run: |
+          flake8 heliotime/ --max-line-length=120 --ignore=E203,W503
+      
+      - name: Run type checking
+        run: |
+          mypy heliotime/ --ignore-missing-imports
+      
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=heliotime --cov-report=term-missing
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  build:
+    name: Build Lambda Package
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Create deployment package
+        run: |
+          # Create package directory
+          mkdir -p lambda_package
+          
+          # Install dependencies to package directory
+          pip install -r requirements.txt -t lambda_package/
+          
+          # Copy application code
+          cp -r heliotime/* lambda_package/
+          
+          # Create zip file
+          cd lambda_package
+          zip -r ../heliotime-lambda.zip . -x "*.pyc" -x "*__pycache__*"
+          cd ..
+          
+          # Store build info
+          echo "BUILD_SHA=${{ github.sha }}" >> build_info.env
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> build_info.env
+      
+      - name: Upload Lambda package
+        uses: actions/upload-artifact@v3
+        with:
+          name: lambda-package
+          path: |
+            heliotime-lambda.zip
+            build_info.env
+
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/dev'
+    environment:
+      name: development
+      url: https://heliotime.dev.sunday.wiki/healthz
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download Lambda package
+        uses: actions/download-artifact@v3
+        with:
+          name: lambda-package
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Load build info
+        run: |
+          source build_info.env
+          echo "BUILD_SHA=$BUILD_SHA" >> $GITHUB_ENV
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+      
+      - name: Deploy Lambda function
+        run: |
+          # Update function code
+          aws lambda update-function-code \
+            --function-name heliotime-dev \
+            --zip-file fileb://heliotime-lambda.zip \
+            --publish
+          
+          # Wait for update to complete
+          aws lambda wait function-updated \
+            --function-name heliotime-dev
+          
+          # Update environment variables
+          aws lambda update-function-configuration \
+            --function-name heliotime-dev \
+            --environment "Variables={
+              ENV=dev,
+              BUILD_SHA=${{ env.BUILD_SHA }},
+              BUILD_DATE=${{ env.BUILD_DATE }},
+              DEV_CROSSCHECK=true,
+              DEV_CROSSCHECK_PROVIDER=open-meteo,
+              DEV_CROSSCHECK_TOLERANCE_SECONDS=120,
+              GEOCODER=nominatim,
+              CACHE_TTL_SECONDS=7776000,
+              MAX_RANGE_DAYS=366,
+              LOG_LEVEL=DEBUG
+            }"
+      
+      - name: Test deployment
+        run: |
+          # Wait for configuration update
+          sleep 10
+          
+          # Test healthz endpoint
+          curl -f https://heliotime.dev.sunday.wiki/healthz || exit 1
+          
+          # Test sun endpoint
+          curl -f "https://heliotime.dev.sunday.wiki/sun?lat=51.5074&lon=-0.1278&date=2025-09-01" || exit 1
+
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://heliotime.sunday.wiki/healthz
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download Lambda package
+        uses: actions/download-artifact@v3
+        with:
+          name: lambda-package
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Load build info
+        run: |
+          source build_info.env
+          echo "BUILD_SHA=$BUILD_SHA" >> $GITHUB_ENV
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+      
+      - name: Deploy Lambda function
+        run: |
+          # Update function code
+          aws lambda update-function-code \
+            --function-name heliotime-prod \
+            --zip-file fileb://heliotime-lambda.zip \
+            --publish
+          
+          # Wait for update to complete
+          aws lambda wait function-updated \
+            --function-name heliotime-prod
+          
+          # Update environment variables
+          aws lambda update-function-configuration \
+            --function-name heliotime-prod \
+            --environment "Variables={
+              ENV=prod,
+              BUILD_SHA=${{ env.BUILD_SHA }},
+              BUILD_DATE=${{ env.BUILD_DATE }},
+              DEV_CROSSCHECK=false,
+              GEOCODER=nominatim,
+              CACHE_TTL_SECONDS=7776000,
+              MAX_RANGE_DAYS=366,
+              LOG_LEVEL=INFO
+            }"
+      
+      - name: Test deployment
+        run: |
+          # Wait for configuration update
+          sleep 10
+          
+          # Test healthz endpoint
+          curl -f https://heliotime.sunday.wiki/healthz || exit 1
+          
+          # Test sun endpoint
+          curl -f "https://heliotime.sunday.wiki/sun?lat=51.5074&lon=-0.1278&date=2025-09-01" || exit 1
+      
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            Production deployment of HelioTime
+            
+            **Build Info:**
+            - SHA: ${{ env.BUILD_SHA }}
+            - Date: ${{ env.BUILD_DATE }}
+            
+            **Changes:**
+            ${{ github.event.head_commit.message }}
+          draft: false
+          prerelease: false
