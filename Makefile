@@ -1,16 +1,25 @@
-.PHONY: help install test lint format clean build deploy-dev deploy-prod check-infra
+.PHONY: help install test lint format clean build check-infra deploy-dev deploy-prod cdk-install cdk-synth cdk-diff
 
 help:
 	@echo "Available commands:"
-	@echo "  make install       - Install dependencies"
+	@echo ""
+	@echo "Development:"
+	@echo "  make install       - Install Python dependencies"
 	@echo "  make test         - Run tests"
 	@echo "  make lint         - Run linting"
 	@echo "  make format       - Format code with black"
 	@echo "  make clean        - Clean build artifacts"
+	@echo ""
+	@echo "Infrastructure (CDK):"
+	@echo "  make cdk-install  - Install CDK dependencies"
+	@echo "  make cdk-synth    - Synthesize CDK stacks"
+	@echo "  make cdk-diff     - Show CDK stack differences"
+	@echo ""
+	@echo "Deployment:"
 	@echo "  make build        - Build Lambda deployment package"
 	@echo "  make check-infra  - Check AWS infrastructure"
-	@echo "  make deploy-dev   - Deploy to development (requires AWS creds)"
-	@echo "  make deploy-prod  - Deploy to production (requires AWS creds)"
+	@echo "  make deploy-dev   - Deploy to development"
+	@echo "  make deploy-prod  - Deploy to production"
 
 install:
 	pip install -r requirements-dev.txt
@@ -41,23 +50,20 @@ build: clean
 	@echo "Lambda package created: heliotime-lambda.zip"
 
 check-infra:
-	python scripts/check_infrastructure.py
+	python scripts/check_infrastructure_v2.py
 
-deploy-dev: build
-	@echo "Deploying to development environment..."
-	aws lambda update-function-code \
-		--function-name heliotime-dev \
-		--zip-file fileb://heliotime-lambda.zip \
-		--profile SundayDev \
-		--publish
-	@echo "Development deployment complete"
+cdk-install:
+	cd infrastructure && npm install
+	npm install -g aws-cdk || true
 
-deploy-prod: build
-	@echo "⚠️  WARNING: Deploying to PRODUCTION!"
-	@read -p "Are you sure? (y/N): " confirm && [ "$$confirm" = "y" ] || exit 1
-	aws lambda update-function-code \
-		--function-name heliotime-prod \
-		--zip-file fileb://heliotime-lambda.zip \
-		--profile SundayDev \
-		--publish
-	@echo "Production deployment complete"
+cdk-synth: cdk-install
+	cd infrastructure && npm run build && cdk synth --profile SundayDev
+
+cdk-diff: cdk-install
+	cd infrastructure && npm run build && cdk diff --all --profile SundayDev
+
+deploy-dev:
+	./scripts/deploy.sh deploy-all dev
+
+deploy-prod:
+	./scripts/deploy.sh deploy-all prod

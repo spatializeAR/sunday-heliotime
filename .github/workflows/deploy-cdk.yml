@@ -1,0 +1,335 @@
+name: Deploy with CDK
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  AWS_REGION: us-east-1
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '18'
+
+jobs:
+  test:
+    name: Test Python Code
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      
+      - name: Run linting
+        run: |
+          flake8 heliotime/ --max-line-length=120 --ignore=E203,W503
+      
+      - name: Run type checking
+        run: |
+          mypy heliotime/ --ignore-missing-imports
+      
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=heliotime --cov-report=term-missing
+
+  build-lambda:
+    name: Build Lambda Package
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Create deployment package
+        run: |
+          mkdir -p lambda_package
+          pip install -r requirements.txt -t lambda_package/
+          cp -r heliotime/* lambda_package/
+          cd lambda_package
+          zip -r ../heliotime-lambda.zip . -x "*.pyc" -x "*__pycache__*"
+          cd ..
+      
+      - name: Upload Lambda package
+        uses: actions/upload-artifact@v3
+        with:
+          name: lambda-package
+          path: heliotime-lambda.zip
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: build-lambda
+    if: github.event_name == 'push'
+    
+    strategy:
+      matrix:
+        include:
+          - branch: dev
+            environment: development
+            stack: HelioTimeDevStack
+          - branch: main
+            environment: production
+            stack: HelioTimeProdStack
+    
+    environment:
+      name: ${{ matrix.environment }}
+    
+    steps:
+      - name: Check branch
+        if: github.ref_name != matrix.branch
+        run: |
+          echo "Skipping ${{ matrix.environment }} deployment (branch: ${{ github.ref_name }})"
+          exit 0
+      
+      - name: Checkout code
+        if: github.ref_name == matrix.branch
+        uses: actions/checkout@v4
+      
+      - name: Download Lambda package
+        if: github.ref_name == matrix.branch
+        uses: actions/download-artifact@v3
+        with:
+          name: lambda-package
+      
+      - name: Set up Node.js
+        if: github.ref_name == matrix.branch
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Cache npm packages
+        if: github.ref_name == matrix.branch
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('infrastructure/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      
+      - name: Install CDK dependencies
+        if: github.ref_name == matrix.branch
+        working-directory: infrastructure
+        run: |
+          npm ci
+          npm install -g aws-cdk
+      
+      - name: Configure AWS credentials
+        if: github.ref_name == matrix.branch
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Deploy shared resources
+        if: github.ref_name == matrix.branch
+        working-directory: infrastructure
+        run: |
+          export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          export CDK_DEFAULT_REGION=${{ env.AWS_REGION }}
+          
+          # Deploy shared stack (idempotent)
+          cdk deploy HelioTimeSharedStack \
+            --require-approval never \
+            --outputs-file shared-outputs.json
+      
+      - name: Deploy environment stack
+        if: github.ref_name == matrix.branch
+        working-directory: infrastructure
+        run: |
+          export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          export CDK_DEFAULT_REGION=${{ env.AWS_REGION }}
+          export GITHUB_SHA=${{ github.sha }}
+          
+          # Deploy environment-specific stack
+          cdk deploy ${{ matrix.stack }} \
+            --require-approval never \
+            --outputs-file ${{ matrix.environment }}-outputs.json
+      
+      - name: Update Lambda code
+        if: github.ref_name == matrix.branch
+        run: |
+          FUNCTION_NAME="heliotime-${{ matrix.branch == 'main' && 'prod' || 'dev' }}"
+          
+          # Update function code
+          aws lambda update-function-code \
+            --function-name $FUNCTION_NAME \
+            --zip-file fileb://heliotime-lambda.zip \
+            --publish
+          
+          # Wait for update
+          aws lambda wait function-updated \
+            --function-name $FUNCTION_NAME
+          
+          # Update environment variables with build info
+          aws lambda update-function-configuration \
+            --function-name $FUNCTION_NAME \
+            --environment "Variables={
+              BUILD_SHA=${{ github.sha }},
+              BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            }"
+      
+      - name: Update SSM deployment timestamp
+        if: github.ref_name == matrix.branch
+        run: |
+          ENV_NAME="${{ matrix.branch == 'main' && 'prod' || 'dev' }}"
+          
+          aws ssm put-parameter \
+            --name "/sunday/services/heliotime/$ENV_NAME/last-deployment" \
+            --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --type String \
+            --overwrite
+      
+      - name: Test deployment
+        if: github.ref_name == matrix.branch
+        run: |
+          ENV_NAME="${{ matrix.branch == 'main' && 'prod' || 'dev' }}"
+          
+          # Get API endpoint from SSM
+          API_ENDPOINT=$(aws ssm get-parameter \
+            --name "/sunday/services/heliotime/$ENV_NAME/api-endpoint" \
+            --query 'Parameter.Value' \
+            --output text)
+          
+          # Test health endpoint
+          curl -f "${API_ENDPOINT}healthz" || exit 1
+          
+          # Test sun endpoint
+          curl -f "${API_ENDPOINT}sun?lat=51.5074&lon=-0.1278&date=2025-09-01" || exit 1
+          
+          echo "Deployment tests passed!"
+      
+      - name: Upload outputs
+        if: github.ref_name == matrix.branch
+        uses: actions/upload-artifact@v3
+        with:
+          name: cdk-outputs-${{ matrix.environment }}
+          path: infrastructure/*-outputs.json
+
+  infrastructure-report:
+    name: Generate Infrastructure Report
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Run infrastructure check
+        run: |
+          python scripts/check_infrastructure_v2.py
+      
+      - name: Upload report
+        uses: actions/upload-artifact@v3
+        with:
+          name: infrastructure-report
+          path: infrastructure_report_v2.json
+      
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('infrastructure_report_v2.json', 'utf8'));
+            
+            let comment = '## 🔍 Infrastructure Report\n\n';
+            comment += '### Deployment Status\n';
+            
+            for (const [env, deployed] of Object.entries(report.deployment_status)) {
+              const status = deployed ? '✅ Deployed' : '❌ Not Deployed';
+              comment += `- **${env.toUpperCase()}**: ${status}\n`;
+            }
+            
+            if (report.recommendations.length > 0) {
+              comment += '\n### 💡 Recommendations\n';
+              for (const rec of report.recommendations) {
+                comment += `- ${rec}\n`;
+              }
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+      
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            ## HelioTime Production Deployment
+            
+            **Build Info:**
+            - SHA: ${{ github.sha }}
+            - Date: ${{ github.event.head_commit.timestamp }}
+            
+            **Changes:**
+            ${{ github.event.head_commit.message }}
+            
+            **Deployment:**
+            - Infrastructure: CDK managed
+            - Lambda: Updated with latest code
+            - API: Available at configured endpoints
+            
+            See infrastructure report for details.
+          draft: false
+          prerelease: false

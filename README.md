@@ -202,18 +202,66 @@ The project uses GitHub Actions for automated testing and deployment:
 
 ### Infrastructure
 
-The service runs on AWS Lambda with:
+The service uses AWS CDK for infrastructure as code and runs on:
+- AWS Lambda for serverless compute
 - API Gateway for HTTP endpoints
 - DynamoDB for geocoding cache
+- SSM Parameter Store for configuration
+- KMS for encryption
 - CloudWatch for logs and metrics
 - Route53 for DNS management
 
-To check current infrastructure:
+#### Infrastructure Management
+
+Check current infrastructure status:
 ```bash
-python scripts/check_infrastructure.py
+make check-infra
+# or
+python scripts/check_infrastructure_v2.py
 ```
 
-To provision missing resources, see `docs/cdk_provisioning_prompt.md`.
+Deploy infrastructure with CDK:
+```bash
+# First time setup
+make cdk-install
+
+# Preview changes
+make cdk-diff
+
+# Deploy to development
+make deploy-dev
+
+# Deploy to production (requires confirmation)
+make deploy-prod
+```
+
+Manual deployment options:
+```bash
+# Deploy infrastructure only
+./scripts/deploy.sh deploy-infra dev
+
+# Deploy code only
+./scripts/deploy.sh deploy-code dev
+
+# Deploy everything
+./scripts/deploy.sh deploy-all dev
+
+# Test deployment
+./scripts/deploy.sh test dev
+```
+
+#### Service Discovery
+
+The infrastructure publishes key information to AWS Systems Manager (SSM) Parameter Store, allowing other services to discover HelioTime resources:
+
+- `/sunday/services/heliotime/name` - Service name
+- `/sunday/services/heliotime/version` - Current version
+- `/sunday/services/heliotime/kms-key-arn` - Encryption key
+- `/sunday/services/heliotime/{env}/api-endpoint` - API endpoints
+- `/sunday/services/heliotime/{env}/lambda-arn` - Lambda ARNs
+- `/sunday/services/heliotime/{env}/dynamodb-table` - Table names
+
+This enables seamless integration with other Sunday.wiki services.
 
 ## Algorithm Details
 

@@ -70,6 +70,16 @@ samconfig.toml
 
 # Infrastructure reports
 infrastructure_report.json
+infrastructure_report_v2.json
+
+# CDK
+infrastructure/node_modules/
+infrastructure/cdk.out/
+infrastructure/*.js
+infrastructure/*.d.ts
+!infrastructure/jest.config.js
+infrastructure/.npmignore
+infrastructure/tsconfig.json.tsbuildinfo
 
 # Environment files
 .env
