@@ -118,26 +118,33 @@ jobs:
         with:
           name: lambda-package
       
-      - name: Set up Node.js
+      - name: Set up Python for CDK
+        if: github.ref_name == matrix.branch
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Set up Node.js for CDK CLI
         if: github.ref_name == matrix.branch
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
       
-      - name: Cache npm packages
+      - name: Cache Python packages
         if: github.ref_name == matrix.branch
         uses: actions/cache@v3
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('infrastructure/package-lock.json') }}
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-cdk-${{ hashFiles('infrastructure/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-node-
+            ${{ runner.os }}-pip-cdk-
       
       - name: Install CDK dependencies
         if: github.ref_name == matrix.branch
         working-directory: infrastructure
         run: |
-          npm ci
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
           npm install -g aws-cdk
       
       - name: Configure AWS credentials

@@ -106,12 +106,17 @@ install_cdk_dependencies() {
     
     cd infrastructure
     
-    if [ ! -d "node_modules" ]; then
-        print_info "Installing npm packages..."
-        npm install
-    else
-        print_info "npm packages already installed"
+    # Set up Python virtual environment
+    if [ ! -d ".venv" ]; then
+        print_info "Creating Python virtual environment..."
+        python3 -m venv .venv
     fi
+    
+    # Activate virtual environment and install dependencies
+    print_info "Installing Python CDK dependencies..."
+    source .venv/bin/activate
+    pip install --upgrade pip --quiet
+    pip install -r requirements.txt --quiet
     
     # Check if CDK is installed globally
     if ! command -v cdk &> /dev/null; then
@@ -130,9 +135,8 @@ deploy_infrastructure() {
     
     cd infrastructure
     
-    # Build TypeScript
-    print_info "Building TypeScript..."
-    npm run build
+    # Activate Python virtual environment
+    source .venv/bin/activate
     
     # Set environment variables
     export CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID
@@ -142,14 +146,14 @@ deploy_infrastructure() {
     # Deploy shared stack if not exists
     if [ "$ENVIRONMENT" == "shared" ] || [ "$ENVIRONMENT" == "all" ]; then
         print_info "Deploying shared resources stack..."
-        npx cdk deploy HelioTimeSharedStack --require-approval never --profile $AWS_PROFILE
+        cdk deploy HelioTimeSharedStack --require-approval never --profile $AWS_PROFILE
         print_success "Shared resources deployed"
     fi
     
     # Deploy environment-specific stack
     if [ "$ENVIRONMENT" == "dev" ] || [ "$ENVIRONMENT" == "all" ]; then
         print_info "Deploying development stack..."
-        npx cdk deploy HelioTimeDevStack --require-approval never --profile $AWS_PROFILE
+        cdk deploy HelioTimeDevStack --require-approval never --profile $AWS_PROFILE
         print_success "Development environment deployed"
     fi
     
@@ -158,13 +162,14 @@ deploy_infrastructure() {
         read -p "⚠️  Are you sure you want to deploy to PRODUCTION? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            npx cdk deploy HelioTimeProdStack --require-approval never --profile $AWS_PROFILE
+            cdk deploy HelioTimeProdStack --require-approval never --profile $AWS_PROFILE
             print_success "Production environment deployed"
         else
             print_info "Production deployment cancelled"
         fi
     fi
     
+    deactivate  # Exit virtual environment
     cd ..
 }
 

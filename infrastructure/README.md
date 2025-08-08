@@ -1,6 +1,6 @@
-# HelioTime CDK Infrastructure
+# HelioTime CDK Infrastructure (Python)
 
-This directory contains the AWS CDK (Cloud Development Kit) application that manages all infrastructure for the HelioTime service.
+This directory contains the AWS CDK (Cloud Development Kit) application written in Python that manages all infrastructure for the HelioTime service.
 
 ## Architecture Overview
 
@@ -33,40 +33,54 @@ Production environment resources (similar to dev but with production settings):
 The infrastructure publishes configuration to SSM Parameter Store, enabling service discovery:
 
 ### Shared Parameters
-- `/sunday/services/heliotime/name` - Service name
-- `/sunday/services/heliotime/version` - Version
-- `/sunday/services/heliotime/description` - Description
-- `/sunday/services/heliotime/kms-key-arn` - KMS key ARN
-- `/sunday/services/heliotime/algorithm` - Algorithm used (NREL_SPA_2005)
-- `/sunday/services/heliotime/limits/max-range-days` - Max date range
-- `/sunday/services/heliotime/cache/ttl-seconds` - Cache TTL
+```
+/sunday/services/heliotime/name                    # Service name
+/sunday/services/heliotime/version                 # Version
+/sunday/services/heliotime/description             # Description
+/sunday/services/heliotime/kms-key-arn            # KMS key ARN
+/sunday/services/heliotime/algorithm              # Algorithm (NREL_SPA_2005)
+/sunday/services/heliotime/limits/max-range-days  # Max date range
+/sunday/services/heliotime/cache/ttl-seconds      # Cache TTL
+```
 
 ### Environment-Specific Parameters
-- `/sunday/services/heliotime/{env}/lambda-arn` - Lambda function ARN
-- `/sunday/services/heliotime/{env}/api-endpoint` - API Gateway endpoint
-- `/sunday/services/heliotime/{env}/api-id` - API Gateway ID
-- `/sunday/services/heliotime/{env}/dynamodb-table` - DynamoDB table name
-- `/sunday/services/heliotime/{env}/domain` - Custom domain
-- `/sunday/services/heliotime/{env}/last-deployment` - Deployment timestamp
+```
+/sunday/services/heliotime/{env}/lambda-arn       # Lambda function ARN
+/sunday/services/heliotime/{env}/api-endpoint     # API Gateway endpoint
+/sunday/services/heliotime/{env}/api-id          # API Gateway ID
+/sunday/services/heliotime/{env}/dynamodb-table  # DynamoDB table name
+/sunday/services/heliotime/{env}/domain          # Custom domain
+/sunday/services/heliotime/{env}/last-deployment # Deployment timestamp
+```
 
 ## Prerequisites
 
-1. **Node.js** (v18 or later)
-2. **AWS CDK CLI**
-3. **AWS credentials** configured
-4. **Python 3.12** (for Lambda runtime)
+1. **Python 3.8+** (3.12 recommended)
+2. **Node.js** (for AWS CDK CLI)
+3. **AWS CDK CLI** (`npm install -g aws-cdk`)
+4. **AWS credentials** configured
 
 ## Installation
 
+### Automated Setup
 ```bash
+# Run the setup script
+python3 setup.py
+```
+
+### Manual Setup
+```bash
+# Create virtual environment
+python3 -m venv .venv
+
+# Activate virtual environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
 # Install dependencies
-npm install
+pip install -r requirements.txt
 
-# Install CDK globally (if not already installed)
+# Install CDK CLI (if not installed)
 npm install -g aws-cdk
-
-# Verify installation
-cdk --version
 ```
 
 ## Configuration
@@ -85,36 +99,38 @@ The CDK app uses context values from `cdk.json`:
 cdk bootstrap aws://ACCOUNT-ID/us-east-1 --profile SundayDev
 ```
 
-2. Deploy shared resources:
+2. Deploy stacks:
 ```bash
-cdk deploy HelioTimeSharedStack --profile SundayDev
-```
+# Activate virtual environment
+source .venv/bin/activate
 
-3. Deploy environment stack:
-```bash
-# Development
+# Deploy shared resources
+cdk deploy HelioTimeSharedStack --profile SundayDev
+
+# Deploy development
 cdk deploy HelioTimeDevStack --profile SundayDev
 
-# Production
+# Deploy production (with confirmation)
 cdk deploy HelioTimeProdStack --profile SundayDev
 ```
 
-### Subsequent Deployments
+### Using Makefile (Recommended)
 
 ```bash
+# Install and setup
+make cdk-install
+
 # Preview changes
-cdk diff --all --profile SundayDev
+make cdk-diff
 
-# Deploy all stacks
-cdk deploy --all --profile SundayDev
+# Deploy to development
+make deploy-dev
 
-# Deploy specific stack
-cdk deploy HelioTimeDevStack --profile SundayDev
+# Deploy to production
+make deploy-prod
 ```
 
 ### Using Deployment Script
-
-The easiest way to deploy is using the provided script:
 
 ```bash
 # Deploy everything to dev
@@ -125,6 +141,34 @@ The easiest way to deploy is using the provided script:
 
 # Deploy Lambda code only
 ../scripts/deploy.sh deploy-code dev
+
+# Test deployment
+../scripts/deploy.sh test dev
+```
+
+## CDK Commands
+
+```bash
+# Activate virtual environment first
+source .venv/bin/activate
+
+# List all stacks
+cdk list
+
+# Synthesize CloudFormation templates
+cdk synth
+
+# Show differences between deployed and local
+cdk diff --all
+
+# Deploy specific stack
+cdk deploy HelioTimeDevStack
+
+# Deploy all stacks
+cdk deploy --all
+
+# Destroy stack (BE CAREFUL!)
+cdk destroy HelioTimeDevStack
 ```
 
 ## Stack Outputs
@@ -141,35 +185,71 @@ Each stack exports important values:
 - `heliotime-dynamodb-table-{env}`: DynamoDB table name
 - `heliotime-domain-{env}`: Custom domain URL
 
-## Resource Naming Convention
+## Project Structure
 
-All resources follow this naming pattern:
-- `heliotime-{resource}-{environment}`
-- Examples:
-  - `heliotime-lambda-dev`
-  - `heliotime-geocache-prod`
-  - `heliotime-api-dev`
+```
+infrastructure/
+├── app.py                 # CDK app entry point
+├── cdk.json              # CDK configuration
+├── requirements.txt      # Python dependencies
+├── setup.py             # Setup script
+├── stacks/
+│   ├── __init__.py
+│   ├── shared_resources_stack.py  # Shared resources
+│   └── heliotime_stack.py        # Main application stack
+└── cdk.out/             # CDK output (gitignored)
+```
+
+## Integration with Other Services
+
+Other Sunday.wiki services can discover HelioTime using boto3:
+
+```python
+import boto3
+
+ssm = boto3.client('ssm')
+
+# Get API endpoint
+response = ssm.get_parameter(
+    Name='/sunday/services/heliotime/prod/api-endpoint'
+)
+api_endpoint = response['Parameter']['Value']
+
+# Get KMS key for encryption
+response = ssm.get_parameter(
+    Name='/sunday/services/heliotime/kms-key-arn'
+)
+kms_key_arn = response['Parameter']['Value']
+
+# Get DynamoDB table
+response = ssm.get_parameter(
+    Name='/sunday/services/heliotime/prod/dynamodb-table'
+)
+table_name = response['Parameter']['Value']
+```
 
 ## Cost Optimization
 
 The infrastructure is designed for cost efficiency:
 - **Lambda**: 256MB memory, pay-per-use
-- **DynamoDB**: On-demand billing (no reserved capacity)
+- **DynamoDB**: On-demand billing
 - **API Gateway**: Pay-per-request
 - **CloudWatch**: 1-month log retention
 - **KMS**: Shared key across environments
 
-Estimated monthly cost (low traffic): < $10
-Estimated monthly cost (1M requests): ~$50-100
+Estimated costs:
+- Low traffic (< 10K requests/month): < $10/month
+- Medium traffic (100K requests/month): ~$20-30/month
+- High traffic (1M requests/month): ~$50-100/month
 
 ## Monitoring
 
-CloudWatch alarms are configured for:
-- Lambda errors (threshold: 10 errors in 2 periods)
-- Lambda duration (threshold: 3 seconds)
-- Lambda throttles (threshold: 5 throttles)
+CloudWatch alarms monitor:
+- Lambda errors (> 10 errors in 2 periods)
+- Lambda duration (> 3 seconds)
+- Lambda throttles (> 5 throttles)
 
-Logs are available at:
+Logs available at:
 - `/aws/lambda/heliotime-dev`
 - `/aws/lambda/heliotime-prod`
 
@@ -178,10 +258,18 @@ Logs are available at:
 - **Encryption**: All data encrypted with KMS
 - **IAM**: Least privilege access policies
 - **Secrets**: Managed through Secrets Manager
-- **Network**: Public Lambda (no VPC for cost savings)
-- **API**: Throttling enabled (50 req/s burst: 100)
+- **API**: Throttling enabled (50 req/s, burst: 100)
 
 ## Troubleshooting
+
+### Virtual Environment Issues
+```bash
+# Recreate virtual environment
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 ### CDK Bootstrap Issues
 ```bash
@@ -191,13 +279,13 @@ cdk bootstrap --profile SundayDev --debug
 
 ### Stack Rollback
 ```bash
-# Check stack events
+# Check CloudFormation events
 aws cloudformation describe-stack-events \
   --stack-name heliotime-dev \
   --profile SundayDev
 ```
 
-### Parameter Store Access
+### SSM Parameter Access
 ```bash
 # List all HelioTime parameters
 aws ssm get-parameters-by-path \
@@ -206,70 +294,40 @@ aws ssm get-parameters-by-path \
   --profile SundayDev
 ```
 
-### Manual Stack Deletion
-```bash
-# Delete stack (BE CAREFUL!)
-cdk destroy HelioTimeDevStack --profile SundayDev
-```
-
-## Integration with Other Services
-
-Other Sunday.wiki services can discover HelioTime by:
-
-1. Reading SSM parameters:
-```python
-import boto3
-
-ssm = boto3.client('ssm')
-response = ssm.get_parameter(
-    Name='/sunday/services/heliotime/dev/api-endpoint'
-)
-api_endpoint = response['Parameter']['Value']
-```
-
-2. Using the KMS key for encryption:
-```python
-response = ssm.get_parameter(
-    Name='/sunday/services/heliotime/kms-key-arn'
-)
-kms_key_arn = response['Parameter']['Value']
-```
-
-3. Accessing the DynamoDB table:
-```python
-response = ssm.get_parameter(
-    Name='/sunday/services/heliotime/dev/dynamodb-table'
-)
-table_name = response['Parameter']['Value']
-```
-
 ## Development Workflow
 
-1. Make infrastructure changes in `lib/` directory
-2. Build TypeScript: `npm run build`
+1. Make infrastructure changes in `stacks/` directory
+2. Activate virtual environment: `source .venv/bin/activate`
 3. Synthesize to verify: `cdk synth`
 4. Preview changes: `cdk diff`
 5. Deploy to dev: `cdk deploy HelioTimeDevStack`
 6. Test thoroughly
 7. Deploy to prod: `cdk deploy HelioTimeProdStack`
 
+## Python CDK Best Practices
+
+1. **Type Hints**: Use type hints for better IDE support
+2. **Stack Separation**: Keep shared and environment-specific resources separate
+3. **Parameter Store**: Use SSM for configuration that other services need
+4. **Tags**: Apply consistent tags for cost tracking
+5. **Removal Policy**: Use RETAIN for production resources
+
 ## CI/CD Integration
 
-The GitHub Actions workflow automatically:
-1. Builds and tests Lambda code
-2. Deploys shared stack (if needed)
-3. Deploys environment stack based on branch
+GitHub Actions automatically:
+1. Tests Python Lambda code
+2. Builds deployment package
+3. Deploys CDK stacks based on branch
 4. Updates Lambda code
-5. Updates SSM deployment timestamp
-6. Runs integration tests
+5. Runs integration tests
+6. Updates SSM deployment timestamp
 
 ## Future Enhancements
 
 - [ ] Custom domain with ACM certificate
-- [ ] API key authentication option
+- [ ] API key authentication
 - [ ] VPC configuration (if needed)
 - [ ] Multi-region deployment
 - [ ] Blue/green deployments
 - [ ] Canary deployments
-- [ ] X-Ray tracing enhancements
-- [ ] Cost allocation tags
+- [ ] Enhanced X-Ray tracing

@@ -53,14 +53,13 @@ check-infra:
 	python scripts/check_infrastructure_v2.py
 
 cdk-install:
-	cd infrastructure && npm install
-	npm install -g aws-cdk || true
+	cd infrastructure && python3 setup.py
 
 cdk-synth: cdk-install
-	cd infrastructure && npm run build && cdk synth --profile SundayDev
+	cd infrastructure && source .venv/bin/activate && cdk synth --profile SundayDev
 
 cdk-diff: cdk-install
-	cd infrastructure && npm run build && cdk diff --all --profile SundayDev
+	cd infrastructure && source .venv/bin/activate && cdk diff --all --profile SundayDev
 
 deploy-dev:
 	./scripts/deploy.sh deploy-all dev

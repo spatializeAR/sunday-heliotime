@@ -73,13 +73,11 @@ infrastructure_report.json
 infrastructure_report_v2.json
 
 # CDK
-infrastructure/node_modules/
+infrastructure/.venv/
 infrastructure/cdk.out/
-infrastructure/*.js
-infrastructure/*.d.ts
-!infrastructure/jest.config.js
-infrastructure/.npmignore
-infrastructure/tsconfig.json.tsbuildinfo
+infrastructure/__pycache__/
+infrastructure/stacks/__pycache__/
+infrastructure/*.egg-info/
 
 # Environment files
 .env
