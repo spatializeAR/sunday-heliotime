@@ -391,7 +391,7 @@ def handle_help_endpoint(event: Dict) -> Dict:
         },
         'algorithm': 'NREL Solar Position Algorithm (Reda & Andreas, 2005)',
         'accuracy': '±0.0003 degrees for solar position',
-        'documentation': 'https://github.com/spatializeAR/heliotime'
+        'documentation': 'https://github.com/spatializeAR/sunday-heliotime'
     })
 
 
